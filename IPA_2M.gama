@@ -2,6 +2,7 @@
 * Name: IPA M2
 * Author: Mewes
 * Description: IPA modelling framework with two different soil layers in 1D column
+* Requires: cmf results for comparison and pF values for soils
 * Tags: IPA, 2 layers, heterogenity
 */
 
@@ -44,7 +45,7 @@ global{
 	float gQs_2 <- 0.338;
 	float gl_2 <- -0.579;
 
-    //read file with pf curve
+    //read file with pf curve:: has to be defined
 	file soildata_2  <- csv_file("../includes/pf_mS.csv");
 	
 	//physical soil dataSu2
@@ -52,7 +53,7 @@ global{
 	float gQs_1 <- 0.3286;
 	float gl_1 <- -3.339;
 
-    //read file with pf curve
+    //read file with pf curve :: has to be defined
 	file soildata_1  <- csv_file("../includes/pf_Su2.csv");
     
     
