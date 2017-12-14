@@ -1,0 +1,663 @@
+/**
+* Name: IPA M2
+* Author: Mewes
+* Description: IPA modelling framework with two different soil layers in 1D column
+* Tags: IPA, 2 layers, heterogenity
+*/
+
+model GAbased1D
+
+/* Global model settings */
+
+global{
+	
+    //General settings
+	float viewshed_control <- 5.0;
+	int i ;
+	float f;
+	float calib_view <- 4.0;
+    
+	float step <- 3600.0 #seconds;
+	float watVALhelper;
+	float saturationDepth;
+	
+    // Initalize target values
+	matrix soilmatrix_1;
+	matrix soilmatrix_2;
+	matrix cmf;
+	
+	float deviation <- 1.0;
+	list<float> storageVal <- [];
+	list<float> obs <- [];
+	
+	float meanDeviation <- 0.0;
+	float KGE <- 0.0;
+	float r <- 0.0;
+	float galpha;
+	float gbeta;
+    
+    //general soil data
+	float geta <- 0.18;
+	
+	//physical soil data mS
+	float ks_2 <- 375.0;
+	float gQs_2 <- 0.338;
+	float gl_2 <- -0.579;
+
+    //read file with pf curve
+	file soildata_2  <- csv_file("../includes/pf_mS.csv");
+	
+	//physical soil dataSu2
+	float ks_1 <- 185.0;
+	float gQs_1 <- 0.3286;
+	float gl_1 <- -3.339;
+
+    //read file with pf curve
+	file soildata_1  <- csv_file("../includes/pf_Su2.csv");
+    
+    
+	// read data for model comparison
+	file cmf_data <- csv_file("../includes/cmf_results.csv");
+	
+    
+    //Start World agent
+	init {
+	
+	//world options	
+	saturationDepth <- 100.0;
+	soilmatrix_1 <- matrix(soildata_1);
+	soilmatrix_2 <- matrix(soildata_2);
+	
+	cmf <- matrix(cmf_data);
+	
+    //Set physical data per cell
+	loop i from: 0 to: cmf.rows -3{ 
+		obs << float(cmf[0,i]);
+	}
+	
+	 ask cell {
+			n <- 1.3533;
+			alpha <- 0.26188;
+			cks  <- ks_2;
+			l <- gl_2;  
+			theta <- 0.2;
+			Qs <- gQs_2;
+			eta <- 0.166;
+			Sqr_HpsiF_term <- 3.39;
+			soilmatrix <- soilmatrix_2;
+		}
+	
+     // Init topmost cell as Green-Ampt infiltration	
+	 ask cell where (each.grid_y = 0){
+	 	cks <- ks_1;
+	 	n <- 1.23472;
+	 	alpha <- 0.20387; 
+	 	Qs <- gQs_1;
+	 	eta <- geta;
+	 	l <- gl_1;
+	 	soilmatrix <- soilmatrix_1;
+	 	Inf_Liste <- getInf(300,1.0,eta,cks/100,Sqr_HpsiF_term);
+	 	theta <- 0.2;
+	 }
+		
+	//Create intial agents	
+	 ask cell {
+            // set number of initial agents by theta and threshold of size
+			nb_create_Agents <- round((self.theta)/0.01);
+				
+				//create agents in place				
+				create Agenten number: nb_create_Agents {
+					watVal <- (myself.theta)/myself.nb_create_Agents;
+					
+					location <- any_location_in(myself);
+					current_cell <- cell(location);
+					viewshed <- ( watVal * viewshed_control)  around location;
+					perceived_area <- (cone(heading-30,heading+30) intersection world.shape) intersection circle((watVal * viewshed_control*calib_view));
+					target <- any_location_in(cell with_max_of each.grid_y);
+                    
+                    //set heading towards lower boundary
+					actualHeading <- location towards target;
+					initalHeading <- actualHeading;
+							
+					Agenten_neighbors <- Agenten at_distance(watVal*viewshed_control*2);
+                    //set heading 
+					loop neighbour over:Agenten_neighbors {	
+						loop while: (perceived_area partially_overlaps neighbour.viewshed) {
+							location <- point([rnd(100.0),0+watVal*viewshed_control]);
+							viewshed <- ( watVal * viewshed_control)  around location;
+							perceived_area <- (cone(heading-30,heading+30) intersection world.shape) intersection circle((watVal * viewshed_control*calib_view));
+						}
+					}
+					
+                    //check consistency
+					ask self{
+						do checkBoundaryConditions;
+					}
+				}
+			
+			
+		}
+		
+        //perform first agent actions - register in cell
+		do CellAgent_Interaction;
+	 	do Cell_Calc_Storage;
+	 	
+	 	ask Agenten {
+	 		do checkBoundaryConditions;
+	 	}
+	 	
+	 	ask cell {
+	 		create controlAgenten number:1 {
+	 				 			location <- point(50,myself.location.y + 5);	
+	 		}
+	 	}
+	 	
+	 	ask controlAgenten {
+	 		homecell <- cell(location);
+	 	}
+			
+	}
+	
+    //re-register agents in cell
+	reflex CellAgent_Interaction_R {
+	 		do CellAgent_Interaction;
+	 		do Cell_Calc_Storage;
+	 		
+	 }
+	
+	//write results to result file
+	reflex writeResults{
+		save (string(cycle) + "," + cell[0].storage + "," + cell[1].storage+ "," + cell[2].storage) to: "../results/run.csv" type:"csv" rewrite:false;
+	}
+	
+	
+
+	//stopping criterion
+	reflex end_simulation when: cycle = 100 {
+		do pause; 
+	}
+
+
+	
+	reflex savetempValues {
+		storageVal << cell[0].storage;
+	}
+	
+	action Cell_Calc_Storage {
+		ask cell {
+			do calcStorage;
+	 	}
+	}
+	
+	action CellAgent_Interaction {
+		ask cell {
+			do CellAgentInt;
+		}
+	}
+	
+    //calculate infiltration after Berry et al.
+	reflex INF {
+		ask cell where (each.grid_y=0) {	
+			if(storage < Qs){
+				if (cycle < length(Inf_Liste)){
+				f <- Inf_Liste[cycle];
+				if((f>0)and(storage+f<=Qs)){
+                    //create new agents in upmost layer
+					create Agenten number: f *10E1 {
+						watVal <- f/(f *10E1);
+
+						location <- point([rnd(100.0),rnd(watVal*viewshed_control)]);
+						current_cell <- cell(location);
+						
+						ask current_cell {
+							do calcStorage;
+						}
+                        
+                    //calculate viewshed of new agents
+					viewshed <- ( watVal * viewshed_control)  around location;
+					perceived_area <- (cone(heading-30,heading+30) intersection world.shape) intersection circle((watVal * viewshed_control*calib_view));
+					target <- any_location_in(cell with_max_of each.grid_y);
+					actualHeading <- location towards target;
+					initalHeading <- actualHeading;
+						
+					Agenten_neighbors <- Agenten at_distance(watVal*viewshed_control*2);
+						loop neighbour over:Agenten_neighbors {	
+							loop while: (perceived_area partially_overlaps neighbour.viewshed) {
+								location <- point([rnd(100.0),0+watVal*viewshed_control]);
+								viewshed <- ( watVal * viewshed_control)  around location;
+								perceived_area <- (cone(heading-30,heading+30) intersection world.shape) intersection circle((watVal * viewshed_control*calib_view));
+							}
+					}
+				
+						
+					ask self{
+						do checkBoundaryConditions;
+					}
+					}
+				}
+				
+                //get deficit of infiltration capacity
+				if((f>0)and(storage+f>Qs)){
+					if (Qs-storage>0){
+						f <- Qs-storage;
+                        //create less agents than possible
+						create Agenten number: f *10E1 {
+							watVal <- f / (f *10E1);
+	
+	
+							location <- point([rnd(100.0),rnd(watVal*viewshed_control)]);
+							current_cell <- cell(location);
+							
+							ask current_cell {
+								do calcStorage;
+							}
+                         
+                        //calculate viewshed and direction
+						viewshed <- ( watVal * viewshed_control)  around location;
+						perceived_area <- (cone(heading-30,heading+30) intersection world.shape) intersection circle((watVal * viewshed_control*calib_view));
+						target <- any_location_in(cell with_max_of each.grid_y);
+						actualHeading <- location towards target;
+						initalHeading <- actualHeading;
+							
+                        //analyse neighborhood    
+						Agenten_neighbors <- Agenten at_distance(watVal*viewshed_control*2);
+							loop neighbour over:Agenten_neighbors {	
+								loop while: (perceived_area partially_overlaps neighbour.viewshed) {
+									location <- point([rnd(100.0),0+watVal*viewshed_control]);
+									viewshed <- ( watVal * viewshed_control)  around location;
+									perceived_area <- (cone(heading-30,heading+30) intersection world.shape) intersection circle((watVal * viewshed_control*calib_view));
+								}
+						}
+					
+						//register and test consistency	
+						ask self{
+							do checkBoundaryConditions;
+						}
+						}
+					
+					}
+				}
+				
+				
+				}
+			}
+		}
+	}
+	
+    //lower boundary exfiltration 
+	reflex Outlet {
+		//all agents leaving the system die
+		ask cell with_max_of(each.grid_y) { 
+			if(length(inside_Agents)!=0){
+				list<Agenten> todie <- inside_Agents where (each.location.y >= 99.50);
+				ask todie {
+					do die;
+				}
+			}
+		
+		}
+		
+	}
+	
+
+	
+	
+	
+}
+
+/* Definition of layer agents */
+
+grid cell width:1 height:10 neighbors: 2 {
+	//Soil hydrological parameters
+	float theta;
+	float eta;
+	float Sqr_HpsiF_term;
+	matrix Inf_Liste;
+	float n;
+	float cks;
+	float l;
+	float alpha;
+	
+	matrix soilmatrix;
+	
+	//variables of infiltration and percolation
+	float storage;
+	float Qs;
+	float virtualStorage update: storage;
+
+	
+	int nb_create_Agents;
+	
+	list<Agenten>inside_Agents update: Agenten inside self;
+	list<float>corresponding_watVal update: nil;
+	
+	//register agent in layer with corresponding share of water to cell theta
+	action CellAgentInt {
+			
+			ask self {
+				corresponding_watVal <- nil;
+			}
+			
+            //register agents within cell as within cell
+			ask Agenten inside self {
+				
+				cell_intersec_center <- nil;
+	 			cell_intersec_down <- nil;
+	 			cell_intersec_up <- nil;
+				
+				
+                //agents completely in cell
+				if(self.viewshed overlaps current_cell) {
+					cell_intersec_center <- inter(viewshed,current_cell);
+					theta_center <- (cell_intersec_center.area/viewshed.area)*watVal;
+					ask current_cell{corresponding_watVal << myself.theta_center;}
+				}
+				
+                //agent partly in cell
+				if(cell(current_cell.grid_y-1)!=nil){
+					if(self.viewshed partially_overlaps cell(current_cell.grid_y-1)) {
+						cell_intersec_up <- inter(viewshed,cell(current_cell.grid_y-1));
+						theta_up <- (cell_intersec_up.area/viewshed.area)*watVal;
+						ask cell(current_cell.grid_y-1){corresponding_watVal << myself.theta_up;}
+					}
+				}
+				
+				if(cell(current_cell.grid_y+1)!=nil){
+					if(self.viewshed partially_overlaps cell(current_cell.grid_y+1)) {
+						cell_intersec_down <- inter(viewshed,cell(current_cell.grid_y+1));
+						theta_down <- (cell_intersec_down.area/viewshed.area)*watVal;
+						ask cell(current_cell.grid_y+1){corresponding_watVal << myself.theta_down;}
+					}
+				}
+				
+			}
+	}
+	
+    //calculate surrounding storage in use
+	action calcStorage{
+		storage <- sum(corresponding_watVal);
+	}
+}
+
+// Definition of hydrologic agents : sort_by varies running order
+
+species Agenten skills:[moving] schedules: Agenten sort_by(-each.psiH) use_regular_agents: false {
+    //define variables
+	float watVal;
+	
+	int actualHeading;
+	int initalHeading;
+	
+	int heading update: actualHeading;
+	cell current_cell update: cell(location);
+	point target;
+	
+	bool wait;
+	int count_wait;
+	
+
+	bool stayCell update: false;
+	bool dontMove update: false;
+	float cur_speed;
+	
+    //Create viewshed
+	geometry viewshed update: ( watVal * viewshed_control)  around location;
+	geometry perceived_area update: (cone(heading-45,heading+45) intersection world.shape) intersection circle((watVal * viewshed_control*calib_view));
+	
+	
+	geometry cell_intersec_center;
+ 	geometry cell_intersec_down;
+ 	geometry cell_intersec_up;
+ 	
+    //define influence
+ 	float theta_up update: 0.0;
+ 	float theta_down update: 0.0;
+ 	float theta_center update: 0.0;
+ 	
+    //relevant potentials
+ 	float psiM; 
+ 	float psiH; 
+	float psiZ;
+	
+    //temp potentials
+	float psiM_u update: 0.0;
+	float psiM_o update: 0.0;
+	
+	float psiZ_u update: 0.0;
+	float psiZ_o update: 0.0;
+	
+	float psiH_u update: 0.0;
+	float psiH_o update: 0.0;
+	
+	float gradH update: 0.0;
+	
+    //list of neighbors
+	list<Agenten>Agenten_neighbors update: Agenten at_distance(watVal*viewshed_control*2);
+	
+    //interaction with environment and other hydrologic agents
+	reflex interaction{
+		actualHeading <- initalHeading;
+		do interactionAgents;
+		do checkBoundaryConditions;
+	}
+	
+	//Search possible way with gradient
+	action interactionAgents{
+		ask Agenten {
+			if (length(Agenten_neighbors)!=0) {
+				loop neighbour over:Agenten_neighbors {			
+					if(perceived_area partially_overlaps neighbour.viewshed) {
+							i <- 0;	
+							if(count_wait<=0){
+								loop while: ((i <= 8)and((perceived_area partially_overlaps neighbour.viewshed)=true)) {
+									i <- i + 1;
+									actualHeading <- actualHeading + 45;
+									if(actualHeading>=360){actualHeading<-0;}
+									perceived_area <- (cone(actualHeading-45,actualHeading+45) intersection world.shape) intersection circle((watVal * viewshed_control*calib_view));
+								}
+								
+								if(perceived_area partially_overlaps neighbour.viewshed) {
+									int muss_bleiben <- rnd_choice([0.5,0.5]);
+									if((muss_bleiben=0) and (count_wait = 0)){
+										wait<-true ;
+										count_wait <- rnd(5);
+									}
+								}
+							
+							}
+					}
+				}
+			}
+		}
+		
+	}
+	
+	//Check general conditions which movements are possible
+	action checkBoundaryConditions {
+		
+	 psiM <- calcPsiM(1,cell(location).storage*100,current_cell.soilmatrix);
+	 psiH <- getPsiH(psiM,(100-location.y));
+	 psiZ <- getPsiZ(100-location.y);
+	 
+	 //calculate speed with the pf curve and van Genuchten's model
+	 cur_speed <- calcKF(current_cell.alpha,  current_cell.cks,  current_cell.n, current_cell.l,  psiM)/(3600);
+	}
+	
+	// move the agent 
+	reflex move {
+		if(wait=false){
+			do checkBoundaryConditions;
+			
+			//change heading
+			
+			if(psiH <= 0 ) {
+				if (heading < 180){
+					actualHeading <- rnd(180,360);
+				}
+			}
+			if(psiH > 0) {
+				if (heading > 180 and heading < 360){
+					actualHeading <- rnd(0,179);
+				}
+			}
+			
+			if(psiH >= 10E-3 and psiH < 10E-3){stayCell <- true;}
+			
+			//Check if there is still storage left to fill
+			
+			cell originC <- cell(location);
+			point orgs_from <- location;
+					
+			ask self {
+						do move heading: actualHeading speed: cur_speed;
+			}
+		
+			cell targetC <- cell(location);
+			
+			if(targetC != originC){
+				ask targetC {
+					if(targetC.storage + myself.watVal > 0.90) {
+							myself.dontMove <- true;
+						}
+				}
+			}
+			
+			ask self {
+				location <- orgs_from;
+				current_cell <- originC;
+			}
+			
+			
+			//if agent can't move wait at position
+			if(dontMove = false){
+				if(stayCell = false){
+					do move heading: actualHeading speed: cur_speed;
+				}
+				if(stayCell = true) {do wander speed: cur_speed;}
+			}
+			
+			
+            //if target had to change according to boundary conditions
+			if(targetC != originC){
+				ask targetC {
+					do CellAgentInt;
+					do calcStorage;
+				}
+			}
+			
+			ask originC {
+				do CellAgentInt;
+				do calcStorage;
+			}
+			
+				
+		}
+		
+        //if agent is not allowed to move stay in cell
+		if(wait=true){
+			count_wait <- count_wait - 1;
+			if(count_wait<=0){
+				Agenten_neighbors <- Agenten at_distance(watVal*viewshed_control*2);
+				count_wait <- 0;
+				if (length(Agenten_neighbors)!=0) {
+					loop neighbour over:Agenten_neighbors {			
+						if(viewshed partially_overlaps neighbour.viewshed) {
+							
+							if(location.y > neighbour.location.y) { 
+								
+								if(watVal + neighbour.watVal <= current_cell.Qs){
+									watVal <- watVal + neighbour.watVal;
+
+									viewshed <- ( watVal * viewshed_control)  around location;
+									perceived_area <- (cone(heading-45,heading+45) intersection world.shape) intersection circle((watVal * viewshed_control*calib_view));
+									ask neighbour {
+										do die;
+									}
+								}
+								
+								if(watVal + neighbour.watVal > current_cell.Qs){
+									watVALhelper <- (current_cell.Qs-watVal+neighbour.watVal);
+									watVal <- watVal + watVALhelper;
+								
+									viewshed <- ( watVal * viewshed_control)  around location;
+									perceived_area <- (cone(heading-45,heading+45) intersection world.shape) intersection circle((watVal * viewshed_control*calib_view));
+									ask neighbour {
+										watVal <- watVal - watVALhelper;
+									}
+								}
+								
+							
+							}
+							
+							if(location.y < neighbour.location.y) {
+								if(watVal + neighbour.watVal <= neighbour.current_cell.Qs){ 
+									ask neighbour{
+										watVal <- watVal + myself.watVal;
+										viewshed <- ( watVal * viewshed_control)  around location;
+										perceived_area <- (cone(heading-45,heading+45) intersection world.shape) intersection circle((watVal * viewshed_control*calib_view));
+									}
+									do die;
+								}
+								
+								if(watVal + neighbour.watVal > neighbour.current_cell.Qs){
+									watVALhelper <- (neighbour.current_cell.Qs-watVal+neighbour.watVal); 
+									ask neighbour{
+										watVal <- watVal + watVALhelper;
+										viewshed <- ( watVal * viewshed_control)  around location;
+										perceived_area <- (cone(heading-45,heading+45) intersection world.shape) intersection circle((watVal * viewshed_control*calib_view));
+									}
+									watVal <- watVal - watVALhelper;
+								}
+							}
+						}
+					}
+				}	
+			}
+		}
+}
+	
+	aspect view {
+		draw viewshed color:#lightblue;
+		if (perceived_area != nil) {
+			draw perceived_area color: #green;
+		}
+	}	
+	
+}
+
+// save temporal conditions
+species controlAgenten {
+	cell homecell;
+	
+	float psiM update: calcPsiM(1,homecell.storage*100,homecell.soilmatrix);
+	float psiH update: getPsiH(psiM,(100-location.y));
+	float psiZ update: getPsiZ(100-location.y);
+	float theta update: homecell.storage;
+	
+	aspect thetaV {
+		//draw string(psiM) color: #black;
+		draw string(psiH) color: #black;
+	}
+}
+	
+/* model runs*/
+experiment Infiltration_mitTH type:gui {
+		output {
+		display AgentGRID {
+				grid cell lines:#black;
+				species Agenten aspect: view;
+				}
+			
+			display chart_display { 
+         		chart "Theta" type: series {
+            	data "Cell 0 STOR " value: cell[0].storage style: line color: #black ;
+            	data "Cell 1 STOR" value: cell[1].storage style: line color: #red ;
+            	data "Cell 2 STOR" value: cell[2].storage style: line color: #yellow ;
+				}
+			}
+		}
+		
+}
+
+
+
