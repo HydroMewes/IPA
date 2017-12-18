@@ -10,3 +10,7 @@ Potential.java - Addition for GAMA Framework to calculate matrix and gravimetric
 
 Requires:
 pF values from soil parameters
+Gama Developer Version (>1.7)
+
+[![DOI](https://zenodo.org/badge/114230537.svg)](https://zenodo.org/badge/latestdoi/114230537)
+
