@@ -125,7 +125,7 @@ global{
 					loop neighbour over:Agenten_neighbors {	
 						loop while: (perceived_area partially_overlaps neighbour.viewshed) {
 							location <- point([rnd(100.0),0+watVal*viewshed_control]);
-							viewshed <- ( watVal * viewshed_control)  around location;
+							viewshed <- sqrt( watVal * viewshed_control)  around location;
 							perceived_area <- (cone(heading-30,heading+30) intersection world.shape) intersection circle((watVal * viewshed_control*calib_view));
 						}
 					}
@@ -254,7 +254,7 @@ global{
 							}
                          
                         //calculate viewshed and direction
-						viewshed <- ( watVal * viewshed_control)  around location;
+						viewshed <- sqrt(( watVal * viewshed_control))  around location;
 						perceived_area <- (cone(heading-30,heading+30) intersection world.shape) intersection circle((watVal * viewshed_control*calib_view));
 						target <- any_location_in(cell with_max_of each.grid_y);
 						actualHeading <- location towards target;
@@ -569,7 +569,7 @@ species Agenten skills:[moving] schedules: Agenten sort_by(-each.psiH) use_regul
 								if(watVal + neighbour.watVal <= current_cell.Qs){
 									watVal <- watVal + neighbour.watVal;
 
-									viewshed <- ( watVal * viewshed_control)  around location;
+									viewshed <- sqrt( watVal * viewshed_control)  around location;
 									perceived_area <- (cone(heading-45,heading+45) intersection world.shape) intersection circle((watVal * viewshed_control*calib_view));
 									ask neighbour {
 										do die;
@@ -580,7 +580,7 @@ species Agenten skills:[moving] schedules: Agenten sort_by(-each.psiH) use_regul
 									watVALhelper <- (current_cell.Qs-watVal+neighbour.watVal);
 									watVal <- watVal + watVALhelper;
 								
-									viewshed <- ( watVal * viewshed_control)  around location;
+									viewshed <- sqrt( watVal * viewshed_control)  around location;
 									perceived_area <- (cone(heading-45,heading+45) intersection world.shape) intersection circle((watVal * viewshed_control*calib_view));
 									ask neighbour {
 										watVal <- watVal - watVALhelper;
